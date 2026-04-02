@@ -17,6 +17,7 @@ It is intentionally conservative:
 - License: Apache License 2.0
 - Canonical license file: [`qwen-code/LICENSE`](./qwen-code/LICENSE)
 - Source files in the vendored copy carry upstream copyright headers from Qwen Team and Google LLC
+- Keep the Apache license text and upstream copyright headers with any redistributed copies
 
 ### `flash-moe/`
 
@@ -24,7 +25,8 @@ It is intentionally conservative:
 - This workspace keeps the repository at its existing path so the upstream history stays intact
 - The upstream README describes the Flash-MoE laptop inference project and the paper-backed implementation details
 - No separate top-level license file is tracked in this workspace copy
-- Confirm upstream terms before redistribution or modification
+- The current GitHub page snapshot does not show a LICENSE file in the repository root
+- Treat reuse or redistribution as license-unclear until the upstream project is checked directly
 
 ### `flash-moe-anemll-ios/`
 
@@ -33,18 +35,21 @@ It is intentionally conservative:
 - The README identifies this tree as a fork of [`danveloper/flash-moe`](https://github.com/danveloper/flash-moe)
 - The README also cites `ncdrone/rustane` as the source of the `--cache-io-split` fanout idea
 - No separate top-level license file is tracked in this workspace copy
-- Confirm upstream and fork-history terms before redistribution or modification
+- The current GitHub page snapshot does not show a LICENSE file in the repository root
+- Treat reuse or redistribution as license-unclear until the upstream and fork-history terms are checked directly
 
 ### `project-docs/ollama-web-search-mcp/`
 
 - Local MCP server built on `@modelcontextprotocol/sdk` and `zod`
-- `package-lock.json` records the transitive dependency tree and its bundled license metadata
-- Top-level package dependencies are `@modelcontextprotocol/sdk` and `zod`
+- Direct dependencies in `package.json`: `@modelcontextprotocol/sdk@^1.0.0` and `zod@^4.1.12`
+- `package-lock.json` records the transitive dependency tree and bundled license metadata
+- The current lockfile scan shows MIT, BSD-3-Clause, BSD-2-Clause, and ISC licenses in the dependency graph
 - If this component is redistributed independently, include the dependency notices that apply to the installed npm packages
 
 ### `project-docs/`
 
 - Contains experiments, prompts, notes, and supporting materials
+- No copied external source has been identified in the current local scan
 - If any file quotes, adapts, or reproduces external material, keep attribution close to the copied content
 
 ## Workspace-Level License
