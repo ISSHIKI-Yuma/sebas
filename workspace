@@ -1,0 +1,428 @@
+#!/usr/bin/env node
+
+const fs = require('node:fs');
+const path = require('node:path');
+const os = require('node:os');
+const { spawn, spawnSync } = require('node:child_process');
+
+const ROOT_DIR = __dirname;
+const MANIFEST_PATH = path.join(ROOT_DIR, '.workspace', 'manifest.json');
+const TMP_DIR = process.env.TMPDIR || '/tmp';
+const DEFAULT_CORE_TOOLS = [
+  'list_directory',
+  'read_file',
+  'grep_search',
+  'glob',
+  'write_file',
+  'run_shell_command',
+];
+
+function loadManifest() {
+  return JSON.parse(fs.readFileSync(MANIFEST_PATH, 'utf8'));
+}
+
+function printUsage(manifest) {
+  const cliName = path.basename(process.argv[1] || 'workspace');
+  console.log(`Usage:
+  ${cliName} list
+  ${cliName} run <profile> [--engine <engine>] [-- <args...>]
+  ${cliName} doctor <profile> [--engine <engine>]
+  ${cliName} bench <profile> [--engine <engine>] [-- <args...>]
+
+Profiles:
+${Object.entries(manifest.profiles)
+  .map(([name, profile]) => `  ${name.padEnd(18)} ${profile.description}`)
+  .join('\n')}
+
+Engines:
+${Object.keys(manifest.engines)
+  .map((name) => `  ${name}`)
+  .join('\n')}`);
+}
+
+function expandHome(value) {
+  if (!value) {
+    return value;
+  }
+  if (value === '~') {
+    return os.homedir();
+  }
+  if (value.startsWith('~/')) {
+    return path.join(os.homedir(), value.slice(2));
+  }
+  return value;
+}
+
+function hasArg(args, needle) {
+  return args.includes(needle);
+}
+
+function ensureDefaultArgs(args, defaults) {
+  const nextArgs = [...args];
+  for (const { whenMissing, values } of defaults) {
+    if (!whenMissing(nextArgs)) {
+      nextArgs.push(...values);
+    }
+  }
+  return nextArgs;
+}
+
+function withCommonQwenDefaults(args) {
+  return ensureDefaultArgs(args, [
+    {
+      whenMissing: (current) =>
+        hasArg(current, '--approval-mode') || hasArg(current, '-y'),
+      values: ['--approval-mode', 'auto-edit'],
+    },
+    {
+      whenMissing: (current) => hasArg(current, '--core-tools'),
+      values: DEFAULT_CORE_TOOLS.flatMap((tool) => ['--core-tools', tool]),
+    },
+  ]);
+}
+
+function resolveWorkspacePath(relativePath) {
+  return path.join(ROOT_DIR, relativePath);
+}
+
+function pathExists(targetPath) {
+  return fs.existsSync(targetPath);
+}
+
+function tailFile(targetPath, maxLines = 40) {
+  if (!pathExists(targetPath)) {
+    return '';
+  }
+  const content = fs.readFileSync(targetPath, 'utf8');
+  return content.split('\n').slice(-maxLines).join('\n');
+}
+
+function interpolateArgs(args, values) {
+  return args.map((arg) =>
+    arg.startsWith('$') ? String(values[arg.slice(1)] ?? '') : arg,
+  );
+}
+
+function parseRuntimeOptions(argv) {
+  const options = {
+    engine: undefined,
+    passthrough: [],
+  };
+
+  for (let index = 0; index < argv.length; index += 1) {
+    const arg = argv[index];
+    if (arg === '--') {
+      options.passthrough.push(...argv.slice(index + 1));
+      break;
+    }
+    if (arg === '--engine') {
+      options.engine = argv[index + 1];
+      index += 1;
+      continue;
+    }
+    options.passthrough.push(arg);
+  }
+
+  return options;
+}
+
+function runSync(command, args, options = {}) {
+  const result = spawnSync(command, args, {
+    stdio: 'inherit',
+    ...options,
+  });
+  if (result.error) {
+    throw result.error;
+  }
+  return result.status ?? 0;
+}
+
+function getQwenCliPath(manifest) {
+  return resolveWorkspacePath(manifest.apps.qwen.entrypoint);
+}
+
+function ensureQwenCliBuilt(manifest) {
+  const cliPath = getQwenCliPath(manifest);
+  if (!pathExists(cliPath)) {
+    throw new Error(`missing qwen-code CLI bundle: ${cliPath}`);
+  }
+  return cliPath;
+}
+
+function getEngineRuntime(manifest, engineName) {
+  const engine = manifest.engines[engineName];
+  if (!engine) {
+    throw new Error(`unknown engine: ${engineName}`);
+  }
+
+  const modelDir = expandHome(
+    process.env[engine.modelDirEnv] || engine.defaultModelDir,
+  );
+  const port = Number(process.env[engine.portEnv] || engine.defaultPort);
+  const prefillBatch =
+    process.env[engine.prefillBatchEnv] || String(engine.defaultPrefillBatch);
+  const thinkBudget =
+    process.env[engine.thinkBudgetEnv] || String(engine.defaultThinkBudget);
+  const kvQuant = process.env[engine.kvQuantEnv] || engine.defaultKvQuant;
+  const values = {
+    MODEL_DIR: modelDir,
+    PORT: String(port),
+    PREFILL_BATCH: String(prefillBatch),
+    THINK_BUDGET: String(thinkBudget),
+    KV_QUANT: kvQuant,
+  };
+
+  return {
+    name: engineName,
+    config: engine,
+    inferBin: resolveWorkspacePath(engine.inferBin),
+    repoPath: resolveWorkspacePath(engine.repoPath),
+    modelDir,
+    port,
+    prefillBatch: String(prefillBatch),
+    thinkBudget: String(thinkBudget),
+    kvQuant,
+    healthUrl: `http://127.0.0.1:${port}${engine.healthPath}`,
+    pidFile: path.join(TMP_DIR, engine.pidFile),
+    stdoutLog: path.join(TMP_DIR, engine.stdoutLog),
+    stderrLog: path.join(TMP_DIR, engine.stderrLog),
+    validateArgs: interpolateArgs(engine.validateArgs, values),
+    serveArgs: interpolateArgs(engine.serveArgs, values),
+  };
+}
+
+async function healthCheck(url) {
+  try {
+    const response = await fetch(url);
+    return response.ok;
+  } catch {
+    return false;
+  }
+}
+
+function killStalePid(pidFile) {
+  if (!pathExists(pidFile)) {
+    return;
+  }
+
+  const oldPid = fs.readFileSync(pidFile, 'utf8').trim();
+  if (!oldPid) {
+    fs.rmSync(pidFile, { force: true });
+    return;
+  }
+
+  try {
+    process.kill(Number(oldPid), 0);
+    process.kill(Number(oldPid));
+  } catch {
+    // Ignore already-dead processes.
+  }
+
+  fs.rmSync(pidFile, { force: true });
+}
+
+function validateEngineRuntime(runtime) {
+  const failures = [];
+
+  if (!pathExists(runtime.inferBin)) {
+    failures.push(`missing infer binary: ${runtime.inferBin}`);
+  } else {
+    try {
+      fs.accessSync(runtime.inferBin, fs.constants.X_OK);
+    } catch {
+      failures.push(`infer binary is not executable: ${runtime.inferBin}`);
+    }
+  }
+
+  if (!pathExists(runtime.modelDir) || !fs.statSync(runtime.modelDir).isDirectory()) {
+    failures.push(`missing model dir: ${runtime.modelDir}`);
+  }
+
+  return failures;
+}
+
+async function ensureEngineReady(runtime) {
+  if (await healthCheck(runtime.healthUrl)) {
+    console.log(`${runtime.name} OpenAI server already running on :${runtime.port}`);
+    return runtime;
+  }
+
+  killStalePid(runtime.pidFile);
+
+  const failures = validateEngineRuntime(runtime);
+  if (failures.length > 0) {
+    throw new Error(failures.join('\n'));
+  }
+
+  if (runtime.validateArgs.length > 0) {
+    const validateArgs = [...runtime.validateArgs];
+    if (runtime.kvQuant !== 'none') {
+      validateArgs.push('--kv-quant', runtime.kvQuant);
+    }
+    const validateStatus = runSync(runtime.inferBin, validateArgs, {
+      cwd: runtime.repoPath,
+      env: process.env,
+    });
+    if (validateStatus !== 0) {
+      throw new Error(`engine validation failed for ${runtime.name}`);
+    }
+  }
+
+  const serveArgs = [
+    '--model',
+    runtime.modelDir,
+    '--serve',
+    String(runtime.port),
+    ...runtime.serveArgs,
+  ];
+  if (runtime.kvQuant !== 'none') {
+    serveArgs.push('--kv-quant', runtime.kvQuant);
+  }
+
+  const stdoutFd = fs.openSync(runtime.stdoutLog, 'a');
+  const stderrFd = fs.openSync(runtime.stderrLog, 'a');
+  const child = spawn(runtime.inferBin, serveArgs, {
+    cwd: runtime.repoPath,
+    detached: true,
+    stdio: ['ignore', stdoutFd, stderrFd],
+    env: process.env,
+  });
+
+  fs.writeFileSync(runtime.pidFile, String(child.pid));
+  child.unref();
+  fs.closeSync(stdoutFd);
+  fs.closeSync(stderrFd);
+
+  for (let attempt = 0; attempt < 240; attempt += 1) {
+    if (await healthCheck(runtime.healthUrl)) {
+      console.log(`${runtime.name} OpenAI server ready on :${runtime.port}`);
+      console.log(`stdout: ${runtime.stdoutLog}`);
+      console.log(`stderr: ${runtime.stderrLog}`);
+      return runtime;
+    }
+    await new Promise((resolve) => setTimeout(resolve, 250));
+  }
+
+  throw new Error(
+    `failed to start ${runtime.name} on :${runtime.port}\n${tailFile(runtime.stderrLog)}`,
+  );
+}
+
+function runQwenAgainstLocalEngine(manifest, runtime, passthrough) {
+  const cliPath = ensureQwenCliBuilt(manifest);
+  const args = withCommonQwenDefaults(passthrough);
+  const env = {
+    ...process.env,
+    OPENAI_API_KEY: process.env.OPENAI_API_KEY || 'dummy',
+  };
+  process.exit(runSync('node', [cliPath, ...args], { env, cwd: ROOT_DIR }));
+}
+
+function runBench(profileName, engineName, passthrough) {
+  const scriptPath =
+    engineName === 'qwen35b'
+      ? resolveWorkspacePath(
+          'flash-moe-anemll-ios/scripts/bench_35b.sh',
+        )
+      : resolveWorkspacePath('flash-moe-anemll-ios/scripts/bench_122b.sh');
+  process.exit(runSync(scriptPath, passthrough, { cwd: ROOT_DIR, env: process.env }));
+}
+
+function doctorQwen(manifest) {
+  const cliPath = getQwenCliPath(manifest);
+  return {
+    name: 'qwen-code CLI bundle',
+    ok: pathExists(cliPath),
+    detail: cliPath,
+  };
+}
+
+function printDoctorResults(results) {
+  let failures = 0;
+  for (const result of results) {
+    const status = result.ok ? 'OK' : 'FAIL';
+    console.log(`${status}  ${result.name}: ${result.detail}`);
+    if (!result.ok) {
+      failures += 1;
+    }
+  }
+  return failures;
+}
+
+(async () => {
+  const manifest = loadManifest();
+  const argv = process.argv.slice(2);
+  const command = argv.shift();
+
+  if (!command || command === 'help' || command === '--help' || command === '-h') {
+    printUsage(manifest);
+    process.exit(0);
+  }
+
+  if (command === 'list') {
+    printUsage(manifest);
+    process.exit(0);
+  }
+
+  const profileName = argv.shift();
+  if (!profileName || !manifest.profiles[profileName]) {
+    printUsage(manifest);
+    process.exit(1);
+  }
+
+  const profile = manifest.profiles[profileName];
+  const options = parseRuntimeOptions(argv);
+  const engineName =
+    options.engine || profile.engine || profile.defaultEngine || 'qwen122b';
+
+  if (command === 'doctor') {
+    const results = [];
+    if (profile.kind !== 'engine-only') {
+      results.push(doctorQwen(manifest));
+    }
+    if (profile.kind === 'qwen-with-engine' || profile.kind === 'engine-only') {
+      const runtime = getEngineRuntime(manifest, engineName);
+      for (const failure of validateEngineRuntime(runtime)) {
+        results.push({
+          name: runtime.name,
+          ok: false,
+          detail: failure,
+        });
+      }
+      if (results.length === 0 || results[results.length - 1].name !== runtime.name) {
+        results.push({
+          name: runtime.name,
+          ok: true,
+          detail: `${runtime.modelDir} -> :${runtime.port}`,
+        });
+      }
+    }
+    const failures = printDoctorResults(results);
+    process.exit(failures > 0 ? 1 : 0);
+  }
+
+  if (command === 'bench') {
+    runBench(profileName, engineName, options.passthrough);
+  }
+
+  if (command !== 'run') {
+    printUsage(manifest);
+    process.exit(1);
+  }
+
+  if (profile.kind === 'engine-only') {
+    await ensureEngineReady(getEngineRuntime(manifest, engineName));
+    process.exit(0);
+  }
+
+  if (profile.kind === 'qwen-with-engine') {
+    const runtime = await ensureEngineReady(getEngineRuntime(manifest, engineName));
+    runQwenAgainstLocalEngine(manifest, runtime, options.passthrough);
+  }
+
+  throw new Error(`unsupported profile kind: ${profile.kind}`);
+})().catch((error) => {
+  const message = error instanceof Error ? error.message : String(error);
+  console.error(message);
+  process.exit(1);
+});
