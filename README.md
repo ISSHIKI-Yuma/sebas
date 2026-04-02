@@ -1,9 +1,20 @@
-# Sebas Project
+# Sebas Workspace
 
-このプロジェクトは、`qwen-code`、`flash-moe-anemll-ios`、`flash-moe` をまとめて扱う Sebas の親レイヤーです。  
-正規の起動導線はトップレベルの `./sebas` で、`./workspace` は互換 alias として残しています。
+Sebas は、ローカル実行用の Qwen 系エンジンと、それを呼び出すための薄い操作レイヤーをまとめた親 workspace です。
 
-## Primary Commands
+この repo の役割は、実体の各リポジトリを動かしやすい形で束ねることです。正規の入口はトップレベルの `./sebas` で、`./workspace` は後方互換の alias として残しています。
+
+## What This Repo Contains
+
+- `sebas`: 主要な実行コマンド
+- `workspace`: `sebas` の互換エントリ
+- `apps/`: 利用者向けの安定 entrypoint
+- `tools/`: 起動・運用・ベンチ用 wrapper
+- `docs/`: workspace の設計と運用方針
+- `engines/`: エンジン構成の整理メモ
+- `project-docs/`: 実験メモ、検証用プロンプト、関連資料
+
+## Quick Start
 
 ```bash
 ./sebas list
@@ -16,11 +27,15 @@
 ./sebas bench local-122b
 ```
 
-## Layout
+## Current Layout
 
-- `apps/`: 利用者向けの安定 entrypoint
-- `tools/`: 運用・起動・ベンチ用の wrapper
-- `docs/`: Sebas の設計と運用方針
-- `engines/`: エンジン系の責務整理メモ
+- `qwen-code/`: qwen-code 本体
+- `flash-moe/`: FlashMoE の実体
+- `flash-moe-anemll-ios/`: iOS / 122B 系の実体
+- `apps/`, `tools/`, `docs/`, `engines/`: Sebas の親レイヤー側の案内と wrapper
 
-現在は Git 履歴保全のため、実体の各リポジトリは既存パスのまま保持しています。`./sebas` がそれらを束ねる単一導線で、`./workspace` は互換 alias です。
+## Notes
+
+- 実体の各リポジトリは、履歴保全のため既存パスのまま保持しています
+- `.gitignore` で `.qwen/`、`.workspace/`、`node_modules/`、既存 repo 本体を除外しています
+- 新しい変更は、まず親 workspace 側の案内や wrapper に寄せるのが基本です
