@@ -2,6 +2,8 @@
 .qwen/
 .workspace/
 .claw/sessions/
+.claw/settings.json
+.codex/sessions/
 .claw/settings.local.json
 *.orig
 rust/target/
