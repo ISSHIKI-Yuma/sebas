@@ -1,7 +1,10 @@
 .DS_Store
 .qwen/
 .workspace/
+.claw/sessions/
+.claw/settings.local.json
 *.orig
+rust/target/
 
 # Keep the embedded repos out of the umbrella repo.
 flash-moe/
