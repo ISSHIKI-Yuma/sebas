@@ -10,6 +10,13 @@ It is intentionally conservative:
 
 ## Included Components
 
+### `rust/`
+
+- Upstream base: [`ultraworkers/claw-code-parity`](https://github.com/ultraworkers/claw-code-parity)
+- Sebas の新しい agent/runtime/CLI 層は、この upstream parity 実装をベースに取り込んだ Rust workspace の上で構築している
+- Upstream license and notice requirements should be checked against the imported upstream tree before redistribution
+- If additional Sebas-specific patches are copied elsewhere, keep the upstream attribution with those files
+
 ### `qwen-code/`
 
 - Upstream repository: [`QwenLM/qwen-code`](https://github.com/QwenLM/qwen-code)
